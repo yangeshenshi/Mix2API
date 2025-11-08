@@ -1,7 +1,8 @@
 // 配置变量
 const API_BASE_URL = "https://movementlabs.ai";
-const DEFAULT_AUTH_KEYS = ["sk-your-key1", "sk-your-key2"];
-const AUTH_KEYS = Deno.env.get("AUTH_KEYS")?.split(",") || DEFAULT_AUTH_KEYS;
+const DEFAULT_AUTH_KEYS = ["sk-default", "sk-false"];
+const DEFAULT_SESSIONS = ["session1", "session2"];
+const AUTH_SESSIONS = Deno.env.get("AUTH_SESSIONS")?.split(",") || DEFAULT_SESSIONS;
 
 // 浏览器 User-Agent 列表
 const USER_AGENTS = [
@@ -27,18 +28,31 @@ function getRandomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+// 随机选择 Session
+function getRandomSession(sessions: string[]): string {
+  return sessions[Math.floor(Math.random() * sessions.length)];
+}
+
 // 生成随机 UUID
 function generateUUID(): string {
   return crypto.randomUUID();
 }
 
-// 验证 API Key
-function validateAuth(req: Request): boolean {
+// 解析 API Key 并返回对应的 sessions
+function parseAuthAndGetSessions(req: Request): string[] | null {
   const authHeader = req.headers.get("Authorization");
-  if (!authHeader) return false;
+  if (!authHeader) return null;
 
   const token = authHeader.replace(/^Bearer\s+/i, "");
-  return AUTH_KEYS.includes(token);
+  
+  // 如果是默认的 auth key,使用内置的 sessions
+  if (DEFAULT_AUTH_KEYS.includes(token)) {
+    return AUTH_SESSIONS;
+  }
+  
+  // 否则,将 token 作为 sessions(支持逗号分隔的多个 session)
+  const sessions = token.split(",").map(s => s.trim()).filter(s => s.length > 0);
+  return sessions.length > 0 ? sessions : null;
 }
 
 // CORS 响应头
@@ -143,7 +157,6 @@ async function handleStreamResponse(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const id = generateUUID();
-  let isFirst = true;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -294,7 +307,7 @@ async function handleNonStreamResponse(
 }
 
 // 处理聊天完成请求
-async function handleChatCompletion(req: Request): Promise<Response> {
+async function handleChatCompletion(req: Request, sessions: string[]): Promise<Response> {
   try {
     const body = await req.json();
     const { messages, stream = false, model = "momentum" } = body;
@@ -313,6 +326,9 @@ async function handleChatCompletion(req: Request): Promise<Response> {
     const convertedMessages = convertMessages(messages);
     const userMessageCount = countUserMessages(messages);
 
+    // 随机选择一个 session
+    const selectedSession = getRandomSession(sessions);
+
     // 构造目标 API 请求
     const targetUrl = `${API_BASE_URL}/api/chat`;
     const targetBody = {
@@ -325,14 +341,19 @@ async function handleChatCompletion(req: Request): Promise<Response> {
         "Content-Type": "application/json",
         "x-message-count": userMessageCount.toString(),
         "User-Agent": getRandomUserAgent(),
-        Referer: `${API_BASE_URL}/`,
+        "Referer": `${API_BASE_URL}/`,
+        "Cookie": `__session=${selectedSession}`,
       },
       body: JSON.stringify(targetBody),
     });
 
     if (!targetResponse.ok) {
       return new Response(
-        JSON.stringify({ error: "Target API request failed" }),
+        JSON.stringify({ 
+          error: "Target API request failed",
+          status: targetResponse.status,
+          statusText: targetResponse.statusText
+        }),
         {
           status: targetResponse.status,
           headers: { "Content-Type": "application/json", ...getCorsHeaders() },
@@ -349,7 +370,10 @@ async function handleChatCompletion(req: Request): Promise<Response> {
   } catch (error) {
     console.error("Chat completion error:", error);
     return new Response(
-      JSON.stringify({ error: "Internal server error" }),
+      JSON.stringify({ 
+        error: "Internal server error",
+        message: error instanceof Error ? error.message : String(error)
+      }),
       {
         status: 500,
         headers: { "Content-Type": "application/json", ...getCorsHeaders() },
@@ -385,12 +409,19 @@ async function handler(req: Request): Promise<Response> {
     );
   }
 
-  // 验证 API Key（除了首页）
-  if (!validateAuth(req)) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json", ...getCorsHeaders() },
-    });
+  // 解析 API Key 并获取 sessions（除了首页）
+  const sessions = parseAuthAndGetSessions(req);
+  if (!sessions) {
+    return new Response(
+      JSON.stringify({ 
+        error: "Unauthorized",
+        message: "Invalid or missing Authorization header"
+      }), 
+      {
+        status: 401,
+        headers: { "Content-Type": "application/json", ...getCorsHeaders() },
+      }
+    );
   }
 
   // 路由处理
@@ -399,7 +430,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
-    return await handleChatCompletion(req);
+    return await handleChatCompletion(req, sessions);
   }
 
   // 未找到路由
