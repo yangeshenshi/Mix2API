@@ -1,0 +1,26 @@
+{
+  "name": "kimicode2api",
+  "version": "1.0",
+  "exports": "./main.ts",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.window", "deno.fetch"]
+  },
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "semiColons": true,
+    "singleQuote": false,
+    "proseWrap": "preserve",
+    "include": ["main.ts"],
+    "exclude": []
+  },
+  "lint": {
+    "include": ["main.ts"],
+    "exclude": [],
+    "rules": {
+      "tags": ["recommended"]
+    }
+  }
+}
